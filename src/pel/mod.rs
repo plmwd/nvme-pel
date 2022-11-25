@@ -1,137 +1,156 @@
 mod events;
-mod headers;
+mod parser;
 
-use self::headers::{parse_event_header, parse_log_header};
+use self::parser::{parse_event_header, parse_log_header};
 use nom::{
     bits,
     bytes::complete::take,
     sequence::{preceded, tuple},
     IResult,
 };
-use std::time::Duration;
+use std::{default, time::Duration};
 
 pub use self::events::*;
-pub use self::headers::{EventHeader, LogHeader};
 
 pub fn parse_pel(input: &[u8]) -> IResult<&[u8], Pel> {
     todo!()
 }
 
+#[derive(Debug, Default)]
 pub struct Pel {
-    header: LogHeader,
-    events: Vec<Event>,
+    pub num_events: u32,
+    pub len: u64,
+    pub revision: u8,
+    pub header_len: u16,
+    pub timestamp: Timestamp,
+    pub power_on_hours: u128,
+    pub power_cycle_count: u64,
+    pub vid: u16,
+    pub ssvid: u16,
+    pub serial_num: String,
+    pub model_num: String,
+    pub name: String,
+    pub supp_events: SuppEventsBitmap,
+    pub events: Option<Vec<Event>>,
+    // Added in 2
+    pub generation: Option<u16>,
+    pub reporting_context: Option<ReportingContext>,
 }
 
+#[derive(Debug)]
+pub enum ReportingContext {
+    DoesNotExist,
+    NVMPort(u16),
+    MiPort(u16),
+}
+
+#[derive(Debug)]
+pub struct EventRecord<T> {
+    pub revision: u8,
+    pub header_len: u8, // The total event header length (EHL+ 3)
+    pub ctrl_id: u16,
+    pub timestamp: Timestamp,
+    pub vendor_info_len: u16,
+    pub len: u16, // The total event length (EL + EHL +3)
+    pub info: Box<T>,
+}
+
+pub type SmartHealthEvent = EventRecord<SmartHealthInfo>;
+pub type FwCommitEvent = EventRecord<FwCommitInfo>;
+pub type TimestampChangeEvent = EventRecord<TimestampChangeInfo>;
+pub type PorEvent = EventRecord<PorInfo>;
+pub type NvmHwErrorEvent = EventRecord<NvmHwErrorInfo>;
+pub type ChangeNamespaceEvent = EventRecord<ChangeNamespaceInfo>;
+pub type FormatNvmStartEvent = EventRecord<FormatNvmStartInfo>;
+pub type FormatNvmCompleteEvent = EventRecord<FormatNvmCompleteInfo>;
+pub type SanitizeStartEvent = EventRecord<SanitizeStartInfo>;
+pub type SanitizeCompleteEvent = EventRecord<SanitizeCompleteInfo>;
+pub type SetFeatureEvent = EventRecord<SetFeatureInfo>;
+pub type TelementryLogCreatedEvent = EventRecord<TelementryLogCreatedInfo>;
+pub type ThermalExcursionEvent = EventRecord<ThermalExcursionInfo>;
+pub type VendorSpecifcEvent = EventRecord<VendorSpecifcInfo>;
+pub type TcgDefinedEvent = EventRecord<TcgDefinedInfo>;
+pub type UnknownEvent = EventRecord<UnknownInfo>;
+
+#[derive(Debug)]
 pub enum Event {
-    SmartHealth(EventHeader, Box<SmartHealthInfo>),
-    FwCommit(EventHeader, Box<FwCommitInfo>),
-    TimestampChange(EventHeader, Box<TimestampChangeInfo>),
-    Por(EventHeader, Box<PorInfo>),
-    NvmHwError(EventHeader, Box<NvmHwErrorInfo>),
-    ChangeNamespace(EventHeader, Box<ChangeNamespaceInfo>),
-    FormatNvmStart(EventHeader, Box<FormatNvmStartInfo>),
-    FormatNvmComplete(EventHeader, Box<FormatNvmCompleteInfo>),
-    SanitizeStart(EventHeader, Box<SanitizeStartInfo>),
-    SanitizeComplete(EventHeader, Box<SanitizeCompleteInfo>),
-    SetFeature(EventHeader, Box<SetFeatureInfo>),
-    TelementryLogCreated(EventHeader, Box<TelementryLogCreatedInfo>),
-    ThermalExcursion(EventHeader, Box<ThermalExcursionInfo>),
-    VendorSpecifc(EventHeader, Box<VendorSpecifcInfo>),
-    TcgDefined(EventHeader, Box<TcgDefinedInfo>),
-    Unsupported(EventHeader, Box<UnsupportedInfo>),
+    SmartHealth(SmartHealthEvent),
+    FwCommit(FwCommitEvent),
+    TimestampChange(TimestampChangeEvent),
+    Por(PorEvent),
+    NvmHwError(NvmHwErrorEvent),
+    ChangeNamespace(ChangeNamespaceEvent),
+    FormatNvmStart(FormatNvmStartEvent),
+    FormatNvmComplete(FormatNvmCompleteEvent),
+    SanitizeStart(SanitizeStartEvent),
+    SanitizeComplete(SanitizeCompleteEvent),
+    SetFeature(SetFeatureEvent),
+    TelementryLogCreated(TelementryLogCreatedEvent),
+    ThermalExcursion(ThermalExcursionEvent),
+    VendorSpecifc(VendorSpecifcEvent),
+    TcgDefined(TcgDefinedEvent),
+    Unknown(UnknownEvent),
 }
 
 // TODO: use a set or something else
+#[derive(Debug, Default)]
 pub struct SuppEventsBitmap([u8; 32]);
-impl SuppEventsBitmap {
-    pub fn is_supported(&self, event_type: EventType) -> bool {
-        let event_type: u8 = event_type as u8;
-        self.0[(event_type / 32) as usize] & (0x1 << (event_type % 32)) > 0
-    }
-}
 
-pub enum EventType {
-    SmartHealth = 0x1,
-    FwCommit,
-    TimestampChange,
-    Por,
-    NvmHwError,
-    ChangeNamespace,
-    FormatNvmStart,
-    FormatNvmComplete,
-    SanitizeStart,
-    SanitizeComplete,
-    SetFeature,
-    TelementryLogCreated,
-    ThermalExcursion,
-    VendorSpecifc = 0xde,
-    TcgDefined = 0xdf,
-}
+pub const SMART_HEALTH: u8 = 0x01;
+pub const FW_COMMIT: u8 = 0x02;
+pub const TIMESTAMP_CHANGE: u8 = 0x02;
+pub const POR: u8 = 0x03;
+pub const NVM_HW_ERROR: u8 = 0x04;
+pub const CHANGE_NAMESPACE: u8 = 0x05;
+pub const FORMAT_NVM_START: u8 = 0x07;
+pub const FORMAT_NVM_COMPLETE: u8 = 0x08;
+pub const SANITIZE_START: u8 = 0x09;
+pub const SANITIZE_COMPLETE: u8 = 0x0a;
+pub const SET_FEATURE: u8 = 0x0b;
+pub const TELEMENTRY_LOG_CREATED: u8 = 0x0c;
+pub const THERMAL_EXCURSION: u8 = 0x0d;
+pub const VENDOR_SPECIFC: u8 = 0xde;
+pub const TCG_DEFINED: u8 = 0xdf;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Default)]
 pub struct Timestamp {
     ms: Duration,
-    origin: Result<TimestampOrigin, u8>,
-    synch: Result<TimestampSynch, u8>,
+    origin: TimestampOrigin,
+    synch: TimestampSynch,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Default)]
 pub enum TimestampOrigin {
+    #[default]
     Reset,
     SetFeature,
+    Unknown(u8),
 }
 
-impl TryFrom<usize> for TimestampOrigin {
-    type Error = u8;
-
-    fn try_from(value: usize) -> Result<Self, Self::Error> {
+impl From<u8> for TimestampOrigin {
+    fn from(value: u8) -> Self {
         match value {
-            0 => Ok(Self::Reset),
-            1 => Ok(Self::SetFeature),
-            _ => Err(value as u8),
+            0 => Self::Reset,
+            1 => Self::SetFeature,
+            _ => Self::Unknown(value),
         }
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Default)]
 pub enum TimestampSynch {
+    #[default]
     Continuous,
     Skipped,
+    Unknown(u8),
 }
 
-impl TryFrom<usize> for TimestampSynch {
-    type Error = u8;
-
-    fn try_from(value: usize) -> Result<Self, Self::Error> {
+impl From<u8> for TimestampSynch {
+    fn from(value: u8) -> Self {
         match value {
-            0 => Ok(Self::Continuous),
-            1 => Ok(Self::Skipped),
-            _ => Err(value as u8),
-        }
-    }
-}
-
-impl TryFrom<u8> for EventType {
-    type Error = u8;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match value {
-            0x01 => Ok(Self::SmartHealth),
-            0x02 => Ok(Self::FwCommit),
-            0x03 => Ok(Self::TimestampChange),
-            0x04 => Ok(Self::Por),
-            0x05 => Ok(Self::NvmHwError),
-            0x06 => Ok(Self::ChangeNamespace),
-            0x07 => Ok(Self::FormatNvmStart),
-            0x08 => Ok(Self::FormatNvmComplete),
-            0x09 => Ok(Self::SanitizeStart),
-            0x0a => Ok(Self::SanitizeComplete),
-            0x0b => Ok(Self::SetFeature),
-            0x0c => Ok(Self::TelementryLogCreated),
-            0x0d => Ok(Self::ThermalExcursion),
-            0xde => Ok(Self::VendorSpecifc),
-            0xdf => Ok(Self::TcgDefined),
-            _ => Err(value),
+            0 => Self::Continuous,
+            1 => Self::Skipped,
+            _ => Self::Unknown(value),
         }
     }
 }
@@ -161,8 +180,8 @@ fn parse_timestamp(input: &[u8]) -> IResult<&[u8], Timestamp> {
         input,
         Timestamp {
             ms: Duration::from_millis(ms),
-            synch: TimestampSynch::try_from(synch),
-            origin: TimestampOrigin::try_from(origin),
+            synch: TimestampSynch::from(synch as u8),
+            origin: TimestampOrigin::from(origin as u8),
         },
     ))
 }
@@ -198,8 +217,8 @@ mod tests {
             parsed_timestamp,
             Timestamp {
                 ms: Duration::from_millis(0),
-                synch: Ok(TimestampSynch::Continuous),
-                origin: Ok(TimestampOrigin::Reset),
+                synch: TimestampSynch::Continuous,
+                origin: TimestampOrigin::Reset,
             }
         );
 
@@ -210,8 +229,8 @@ mod tests {
             parsed_timestamp,
             Timestamp {
                 ms: Duration::from_millis(0x554433221100),
-                synch: Ok(TimestampSynch::Skipped),
-                origin: Ok(TimestampOrigin::SetFeature),
+                synch: TimestampSynch::Skipped,
+                origin: TimestampOrigin::SetFeature,
             }
         );
 
@@ -222,8 +241,8 @@ mod tests {
             parsed_timestamp,
             Timestamp {
                 ms: Duration::from_millis(0x554433221100),
-                synch: Ok(TimestampSynch::Skipped),
-                origin: Err(2u8),
+                synch: TimestampSynch::Skipped,
+                origin: TimestampOrigin::Unknown(2u8),
             }
         );
     }
